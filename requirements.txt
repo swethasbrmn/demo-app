@@ -1,0 +1,142 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+
+# --- 1. PAGE CONFIGURATION ---
+st.set_page_config(
+    page_title="PAN Employee Engagement Diagnostics",
+    page_icon="",
+    layout="wide"
+)
+
+# --- 2. DATA LOADING & PROCESSING ---
+@st.cache_data
+def load_and_process_data():
+    np.random.seed(42)
+    rows = 300
+    data = {
+        'EmployeeNumber': range(101, 101 + rows),
+        'Department': np.random.choice(['Cybersecurity', 'Engineering', 'Sales', 'HR', 'Product'], rows),
+        'JobRole': np.random.choice(['Analyst', 'Manager', 'Developer', 'Director', 'Consultant'], rows),
+        'JobLevel': np.random.randint(1, 6, rows),
+        'YearsAtCompany': np.random.randint(0, 21, rows), # Increased range to match slider
+        'OverTime': np.random.choice(['Yes', 'No'], rows),
+        'WorkLifeBalance': np.random.randint(1, 5, rows),
+        'JobInvolvement': np.random.randint(1, 5, rows),
+        'JobSatisfaction': np.random.choice([1, 2, 3, 4, np.nan], rows),
+        'EnvironmentSatisfaction': np.random.randint(1, 5, rows),
+        'RelationshipSatisfaction': np.random.randint(1, 5, rows),
+        'Attrition': np.random.choice(['Stayed', 'Left'], rows, p=[0.82, 0.18])
+    }
+    df = pd.DataFrame(data)
+    
+    # Cleaning & Feature Engineering
+    df['JobSatisfaction'] = df['JobSatisfaction'].fillna(df['JobSatisfaction'].median())
+    sat_cols = ['JobInvolvement', 'JobSatisfaction', 'EnvironmentSatisfaction', 'RelationshipSatisfaction']
+    df['Engagement_Index'] = (df[sat_cols].sum(axis=1) / 16) * 100
+
+    def flag_burnout(row):
+        if row['OverTime'] == 'Yes' and row['WorkLifeBalance'] <= 2: return 'High'
+        elif row['OverTime'] == 'Yes' or row['WorkLifeBalance'] <= 2: return 'Medium'
+        return 'Low'
+    
+    df['Burnout_Risk'] = df.apply(flag_burnout, axis=1)
+    return df
+
+df = load_and_process_data()
+#---Title----
+st.markdown("<h1 style='text-align: center; font-size: 60px;'>Engagement & Burnout Diagnostic</h1>", unsafe_allow_html=True)
+
+# --- 3. SIDEBAR NAVIGATION & FILTERS ---
+st.sidebar.title("")
+
+# Module Navigation
+
+module = st.sidebar.radio(
+    "Select Module", 
+    ["Engagement Health Overview", "Burnout Risk", "Role & Career Stage Analysis", "Manager Action Panel"]
+)
+st.sidebar.divider()
+
+# Global Filters
+st.sidebar.header("Filters")
+selected_dept = st.sidebar.multiselect("Department", options=df['Department'].unique(), default=df['Department'].unique())
+selected_role = st.sidebar.multiselect("Job Role", options=df['JobRole'].unique(), default=df['JobRole'].unique())
+tenure_range = st.sidebar.slider("Tenure Range (Years)", 0, 20, (0, 20))
+eng_threshold = st.sidebar.slider("Engagement Alert Threshold", 0, 100, 50)
+ot_toggle = st.sidebar.toggle("Focus on Overtime Employees Only")
+
+# --- 4. APPLY FILTER LOGIC ---
+filtered_df = df[
+    (df['Department'].isin(selected_dept)) & 
+    (df['JobRole'].isin(selected_role)) &  
+    (df['YearsAtCompany'].between(tenure_range[0], tenure_range[1]))
+]
+
+if ot_toggle:
+    filtered_df = filtered_df[filtered_df['OverTime'] == 'Yes']
+
+# --- 5. MODULE ROUTING ---
+
+if module == "Engagement Health Overview":
+
+    st.title(" Engagement Health Overview")
+    
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        avg_eng = filtered_df['Engagement_Index'].mean() if not filtered_df.empty else 0
+        st.metric("Org-Wide Engagement", f"{avg_eng:.1f}%", delta=f"{avg_eng-70:.1f}% vs Target", delta_color="inverse")
+    with m2:
+        high_burn_count = len(filtered_df[filtered_df['Burnout_Risk'] == 'High'])
+        st.metric("High Burnout Risk Count", high_burn_count)
+    with m3:
+        st.metric("Headcount (Filtered)", len(filtered_df))
+
+    st.divider()
+    st.subheader("Satisfaction Distribution")
+    if not filtered_df.empty:
+        sat_dist = filtered_df['JobSatisfaction'].value_counts().sort_index()
+        st.bar_chart(sat_dist, color="#2E86C1")
+    else:
+        st.warning("No data available for the selected filters.")
+
+elif module == "Burnout Risk":
+    st.title("Burnout Risk")
+    
+    st.subheader("High-Risk Segments")
+    high_risk_df = filtered_df[filtered_df['Burnout_Risk'] == 'High']
+    st.dataframe(high_risk_df[['EmployeeNumber', 'Department', 'JobRole', 'WorkLifeBalance', 'OverTime']], use_container_width=True)
+
+    st.divider()
+    st.subheader("Work-Life Imbalance by Tenure")
+    if not filtered_df.empty:
+        wlb_trend = filtered_df.groupby('YearsAtCompany')['WorkLifeBalance'].mean()
+        st.line_chart(wlb_trend)
+
+elif module == "Role & Career Stage Analysis":
+    st.title("🚀 Role & Career Stage Analysis")
+    
+    tab1, tab2 = st.tabs(["By Job Role & Level", "Tenure Trends"])
+    with tab1:
+        if not filtered_df.empty:
+            role_data = filtered_df.groupby(['JobRole', 'JobLevel'])['Engagement_Index'].mean().unstack()
+            st.bar_chart(role_data)
+    with tab2:
+        if not filtered_df.empty:
+            tenure_eng = filtered_df.groupby('YearsAtCompany')['Engagement_Index'].mean()
+            st.area_chart(tenure_eng)
+
+elif module == "Manager Action Panel":
+    st.title("🚨 Manager Action Panel")
+    
+    with st.container(border=True):
+        alerts = filtered_df[filtered_df['Engagement_Index'] < eng_threshold]
+        if not alerts.empty:
+            st.error(f"Found {len(alerts)} employees requiring immediate review (Engagement < {eng_threshold}%)")
+            st.dataframe(
+                alerts[['EmployeeNumber', 'Department', 'JobRole', 'Engagement_Index', 'Burnout_Risk']], 
+                use_container_width=True
+            )
+        else:
+            st.success("No employees currently fall below the set Engagement Alert Threshold.")
+
